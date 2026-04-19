@@ -23,12 +23,39 @@ SNOMED_DEMO = {
 }
 
 SYSTEM_PROMPT = """You are a medical triage assistant for community health workers in India.
-Input is mixed Hindi-English (Hinglish) clinical notes. Output MUST be a valid JSON object.
+Input is mixed Hindi-English (Hinglish) clinical notes.
+Output MUST be a valid JSON object with EXACTLY these field names:
+
+{
+  "symptoms": ["list of symptoms in English"],
+  "vitals": {
+    "systolic_bp": null or number,
+    "diastolic_bp": null or number,
+    "temperature_f": null or number,
+    "pulse": null or number
+  },
+  "duration": null or string,
+  "severity_score": number between 0.0 and 1.0,
+  "referral_flag": true or false,
+  "evidence_cited": "the phrase that determined severity",
+  "language_notes": "hinglish terms used e.g. sir dard = headache",
+  "code_status": "auto"
+}
 
 Severity rules:
-- Red flags (Score > 0.8): BP > 160, Temp > 103F, chest pain, breathing difficulty.
-- Moderate (0.4 - 0.7): fever, persistent cough.
-- Low (< 0.4): mild symptoms."""
+- Red flags → severity_score above 0.8, referral_flag true:
+  BP systolic > 160, temperature > 103F, chest pain, breathing difficulty, altered consciousness
+- Moderate → severity_score 0.4 to 0.69: fever, persistent cough, moderate pain
+- Low → severity_score below 0.4: mild symptoms, no red flag vitals
+
+Few-shot examples:
+Input: "Mera sir dukh raha hai aur BP 160/100 hai, 2 din se"
+Output: {"symptoms": ["headache"], "vitals": {"systolic_bp": 160, "diastolic_bp": 100, "temperature_f": null, "pulse": null}, "duration": "2 days", "severity_score": 0.85, "referral_flag": true, "evidence_cited": "BP 160/100 detected", "language_notes": "sir dukh raha hai = headache", "code_status": "auto"}
+
+Input: "Patient has fever 102 and cough for 3 days"
+Output: {"symptoms": ["fever", "cough"], "vitals": {"systolic_bp": null, "diastolic_bp": null, "temperature_f": 102, "pulse": null}, "duration": "3 days", "severity_score": 0.45, "referral_flag": false, "evidence_cited": "Fever 102F, no red flag vitals", "language_notes": null, "code_status": "auto"}
+
+Only extract vitals explicitly stated. Never guess missing values."""
 
 async def triage_extractor(raw_text: str, patient_id: str, patient_history: dict = None) -> dict:
     history_context = ""
