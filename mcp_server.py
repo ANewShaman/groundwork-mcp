@@ -23,10 +23,20 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 @mcp.on_startup()
-async def startup():
+async def add_fhir_extension():
+    # 1. Maintain your original startup logic
     init_db()
     asyncio.create_task(sync_worker(interval_seconds=30))
 
+    # 2. Inject PO capabilities
+    mcp._server.settings.capabilities.extensions = {
+        "ai.promptopinion/fhir-context": {
+            "scopes": [
+                {"name": "patient/Patient.rs", "required": True},
+                {"name": "patient/Condition.rs", "required": False}
+            ]
+        }
+    }
 # ---------------------------------------------------------------------------
 # Phase 3 tools (unchanged)
 # ---------------------------------------------------------------------------
