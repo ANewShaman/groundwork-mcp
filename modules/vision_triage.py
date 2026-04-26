@@ -4,16 +4,24 @@ import base64
 import httpx
 from groq import AsyncGroq
 from dotenv import load_dotenv
+from pathlib import Path
 
+# Load environment variables
 load_dotenv()
 
 client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
-from modules.triage import LOINC_VITALS, SNOMED_CONDITIONS
+# Import existing mappings from the triage module
+try:
+    from modules.triage import LOINC_VITALS, SNOMED_CONDITIONS
+except ImportError:
+    # Fallback/Mock for standalone testing
+    LOINC_VITALS = {}
+    SNOMED_CONDITIONS = {}
 
 # ---------------------------------------------------------------------------
-# Vision system prompt — identical output schema to triage_extractor
+# Vision system prompt
 # ---------------------------------------------------------------------------
 
 VISION_SYSTEM_PROMPT = """You are a clinical image interpreter for community health workers in low-resource settings.
@@ -65,39 +73,24 @@ GLUCOSE METER:
 - >200 mg/dL or >11.1 mmol/L → symptoms: ["hyperglycemia"], severity_score 0.75, referral_flag true
 - <70 mg/dL or <3.9 mmol/L → symptoms: ["hypoglycemia"], severity_score 0.85, referral_flag true
 
-HANDWRITTEN HEALTH RECORD:
-- Transcribe any legible vitals into vitals fields
-- Extract symptoms or diagnoses mentioned
-- Apply same severity rules as text triage
-
-LAB RESULT:
-- Extract values and units into vitals fields where applicable
-- Flag abnormal values
-
 GENERAL RULES:
 - If image is unclear or unrelated to clinical data → severity_score 0.0, referral_flag false, image_type: "unknown"
 - Never diagnose. Only describe what is visually present.
 - Never infer values not visible in the image."""
 
 # ---------------------------------------------------------------------------
-# Helper: fetch a URL to base64 (handles Wikimedia and similar)
+# Helpers
 # ---------------------------------------------------------------------------
 
 async def fetch_image_as_base64(url: str) -> tuple[str, str]:
     """Fetch an image from a URL, return (base64_string, mime_type)."""
-    headers = {
-        "User-Agent": "GroundWork-MCP/1.0 (community health research)"
-    }
+    headers = {"User-Agent": "GroundWork-MCP/1.0 (community health research)"}
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as http:
         r = await http.get(url, headers=headers)
         r.raise_for_status()
     mime = r.headers.get("content-type", "image/jpeg").split(";")[0].strip()
     b64 = base64.b64encode(r.content).decode()
     return b64, mime
-
-# ---------------------------------------------------------------------------
-# Build image content block — supports base64 or direct URL
-# ---------------------------------------------------------------------------
 
 def _image_block(
     image_base64: str = None,
@@ -111,26 +104,29 @@ def _image_block(
         "image_url": {"url": f"data:{image_mime};base64,{image_base64}"}
     }
 
-# ---------------------------------------------------------------------------
-# Post-process: add LOINC/SNOMED maps
-# ---------------------------------------------------------------------------
-
 def _add_terminology_maps(result: dict) -> dict:
+    """Safely map extracted findings to clinical standards."""
     vitals = result.get("vitals", {}) or {}
+    
+    # Map LOINC codes only if the key exists and value is present
     result["loinc_map"] = {
         LOINC_VITALS[k]: v
         for k, v in vitals.items()
         if v is not None and k in LOINC_VITALS
     }
+    
+    # Map SNOMED codes for symptoms found in the image
+    symptoms = result.get("symptoms", []) or []
     result["snomed_map"] = {
         s.lower(): SNOMED_CONDITIONS[s.lower()]
-        for s in result.get("symptoms", [])
+        for s in symptoms
         if s.lower() in SNOMED_CONDITIONS
     }
+    
     return result
 
 # ---------------------------------------------------------------------------
-# Main function
+# Main Vision Triage Function
 # ---------------------------------------------------------------------------
 
 async def analyze_clinical_image(
@@ -142,12 +138,8 @@ async def analyze_clinical_image(
     image_url: str = None,
 ) -> dict:
     """
-    Analyze a clinical image and return structured triage data.
-    Output schema is identical to triage_extractor — same downstream pipeline works.
-
-    Pass ONE of:
-        image_base64 + image_mime: for locally encoded images
-        image_url: for direct URLs (faster, no encoding needed)
+    Analyze clinical image and return structured triage data.
+    Output is schema-aligned with text triage for downstream processing.
     """
     if not image_base64 and not image_url:
         return {
@@ -178,8 +170,11 @@ async def analyze_clinical_image(
             max_tokens=1024
         )
 
+        # Parse and enrich with terminology mappings
         result = json.loads(response.choices[0].message.content)
         result = _add_terminology_maps(result)
+        
+        # Meta-data for downstream pipeline
         result["patient_id"] = patient_id
         result["input_type"] = "image"
         if chw_id:
