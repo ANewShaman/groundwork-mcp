@@ -136,6 +136,7 @@ async def analyze_clinical_image(
     image_base64: str = None,
     image_mime: str = "image/jpeg",
     image_url: str = None,
+    manual_history: str = None
 ) -> dict:
     """
     Analyze clinical image and return structured triage data.
@@ -149,6 +150,9 @@ async def analyze_clinical_image(
         }
 
     user_text = "Analyze this clinical image and extract all visible health data."
+
+    if manual_history:
+        user_text += f" IMPORTANT PATIENT HISTORY: {manual_history}."
     if context_hint:
         user_text += f" This appears to be: {context_hint}."
 
