@@ -1,4 +1,5 @@
 import asyncio
+import os
 from fastmcp import FastMCP
 from dotenv import load_dotenv
 
@@ -19,26 +20,45 @@ mcp = FastMCP(
 )
 
 # ---------------------------------------------------------------------------
-# Startup: initialise SQLite queue + launch background sync worker
+# Startup
 # ---------------------------------------------------------------------------
 
 @mcp.on_startup()
-async def add_fhir_extension():
-    # 1. Maintain your original startup logic
+async def startup():
     init_db()
     asyncio.create_task(sync_worker(interval_seconds=30))
+    print("[GroundWork] Started. Sync worker running.")
 
-    # 2. Inject PO capabilities
-    mcp._server.settings.capabilities.extensions = {
-        "ai.promptopinion/fhir-context": {
-            "scopes": [
-                {"name": "patient/Patient.rs", "required": True},
-                {"name": "patient/Condition.rs", "required": False}
-            ]
-        }
-    }
+    # Attempt FHIR extension injection — log result either way so you know if it worked
+    try:
+        raw = mcp._mcp_server
+        orig = raw.handle_initialize
+
+        async def patched(params):
+            result = await orig(params)
+            try:
+                if result.capabilities.experimental is None:
+                    result.capabilities.experimental = {}
+                result.capabilities.experimental["ai.promptopinion/fhir-context"] = {
+                    "scopes": [
+                        {"name": "patient/Patient.rs",    "required": True},
+                        {"name": "patient/Condition.rs",  "required": False},
+                        {"name": "patient/Observation.rs","required": False}
+                    ]
+                }
+                print("[GroundWork] FHIR context extension injected.")
+            except Exception as inner:
+                print(f"[GroundWork] Extension inject failed inside handler: {inner}")
+            return result
+
+        raw.handle_initialize = patched
+        print("[GroundWork] Initialize handler patched.")
+    except Exception as e:
+        print(f"[GroundWork] Could not patch initialize: {e}")
+        print("[GroundWork] FHIR Context Ext will show No on PO — ask PO Discord for correct hook.")
+
 # ---------------------------------------------------------------------------
-# Phase 3 tools (unchanged)
+# Tools
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -46,7 +66,7 @@ async def extract_triage(raw_text: str, patient_id: str) -> dict:
     """
     Extract triage data from multilingual CHW clinical text.
     Returns severity score, referral flag, LOINC-mapped vitals, SNOMED symptoms.
-    For FHIR history cross-referencing, use extract_triage_with_history instead.
+    Use extract_triage_with_history for FHIR history cross-referencing.
     """
     return await triage_extractor(raw_text, patient_id)
 
@@ -59,8 +79,7 @@ async def get_patient_history(
 ) -> dict:
     """
     Pull active Condition resources for a patient from the FHIR server.
-    Accepts SHARP context: fhir_server_url (X-FHIR-Server-URL) and fhir_token (X-FHIR-Access-Token).
-    Returns condition list for triage cross-referencing.
+    SHARP context: fhir_server_url = X-FHIR-Server-URL, fhir_token = X-FHIR-Access-Token.
     """
     return await get_patient_context(patient_id, fhir_server_url, fhir_token)
 
@@ -76,9 +95,10 @@ async def extract_triage_with_history(
     """
     PRIMARY TRIAGE TOOL: Full pipeline with FHIR history cross-reference.
     Step 1 — Pull patient conditions from FHIR server.
-    Step 2 — Triage the clinical note with history injected.
+    Step 2 — Triage the multilingual clinical note with history injected.
     Step 3 — Apply deterministic severity upgrades (COPD+cough, TB+cough, etc).
-    Accepts SHARP context: fhir_server_url and fhir_token.
+    SHARP context: fhir_server_url = X-FHIR-Server-URL, fhir_token = X-FHIR-Access-Token,
+    patient_id = X-Patient-ID.
     """
     patient_history = await get_patient_context(patient_id, fhir_server_url, fhir_token)
     result = await triage_extractor(raw_text, patient_id, patient_history, chw_id=chw_id)
@@ -91,14 +111,11 @@ async def extract_triage_with_history(
 async def build_fhir_bundle(triage_output: dict, patient_id: str) -> dict:
     """
     Build a validated FHIR R4 Transaction Bundle from triage output.
-    Generates Condition resources (SNOMED), Observation resources (LOINC), and RiskAssessment.
+    Generates Condition (SNOMED), Observation (LOINC), and RiskAssessment resources.
     Only call when referral_flag is true.
     """
     return await fhir_bundle_builder(triage_output, patient_id)
 
-# ---------------------------------------------------------------------------
-# Phase 5: dispatch with idempotency + retries
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
 async def dispatch_fhir_bundle(
@@ -109,55 +126,52 @@ async def dispatch_fhir_bundle(
     chw_id: str = None
 ) -> dict:
     """
-    Build and dispatch a FHIR bundle in one step.
-    Includes idempotency key (prevents duplicates on retry) and tenacity retries
-    (exponential backoff on network failure). Falls back to local sync queue if
-    all retries fail — returns status=queued instead of error.
+    Build and dispatch a FHIR bundle in one step with idempotency and retries.
+    Idempotency key prevents duplicate records on bad-connection retries.
+    Falls back to local SQLite sync queue if all retries fail — returns status=queued.
     Only call when triage_output contains referral_flag=true.
+    SHARP context: fhir_server_url = X-FHIR-Server-URL, fhir_token = X-FHIR-Access-Token.
     """
     bundle = await fhir_bundle_builder(triage_output, patient_id)
     return await dispatch_bundle(bundle, patient_id, fhir_server_url, fhir_token, chw_id)
 
-# ---------------------------------------------------------------------------
-# Phase 6: sync queue status
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
 async def check_sync_queue() -> dict:
     """
-    Return current sync queue status: pending, synced, failed counts.
-    Use during demo to show offline queue draining when connection restores.
-    The background worker retries pending bundles every 30 seconds automatically.
+    Return sync queue status: pending, synced, failed counts.
+    Background worker retries pending bundles every 30 seconds automatically.
     """
     return queue_status()
 
-# ---------------------------------------------------------------------------
-# Phase 7: image triage
-# ---------------------------------------------------------------------------
 
 @mcp.tool()
 async def analyze_clinical_image(
-    image_base64: str,
-    image_mime: str,
     patient_id: str,
+    image_base64: str = None,
+    image_mime: str = "image/jpeg",
+    image_url: str = None,
     chw_id: str = None,
-    context_hint: str = None
+    context_hint: str = None,
+    manual_history: str = None
 ) -> dict:
     """
-    Vision triage: analyze a photo taken by a CHW and extract structured clinical data.
-    Supports: malaria RDT strips, thermometers, wounds, handwritten health records, lab results.
-    Output schema is identical to extract_triage — same downstream pipeline (build_fhir_bundle,
-    dispatch_fhir_bundle) works unchanged.
-
-    Args:
-        image_base64: base64-encoded image (no data URI prefix)
-        image_mime:   "image/jpeg" or "image/png"
-        patient_id:   patient identifier
-        chw_id:       CHW identifier (optional)
-        context_hint: optional hint e.g. "malaria test strip", "thermometer reading"
+    Vision triage: analyze a CHW photo and extract structured clinical data.
+    Supports: malaria RDT strips, thermometers, wounds, handwritten records, lab results.
+    Output schema identical to extract_triage — same downstream pipeline works unchanged.
+    Pass image_base64 + image_mime for encoded images, or image_url for direct URLs.
     """
-    return await _analyze_image(image_base64, image_mime, patient_id, chw_id, context_hint)
+    return await _analyze_image(
+        patient_id=patient_id,
+        chw_id=chw_id,
+        context_hint=context_hint,
+        image_base64=image_base64,
+        image_mime=image_mime,
+        image_url=image_url,
+        manual_history=manual_history
+    )
 
 
 if __name__ == "__main__":
-    mcp.run(transport="sse", host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    mcp.run(transport="sse", host="0.0.0.0", port=port)
