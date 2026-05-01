@@ -118,7 +118,7 @@ async def dispatch_bundle(
 
     # --- Fallback: enqueue for later sync ---
     try:
-        enqueue(
+        inserted = enqueue(
             bundle=fhir_bundle,
             patient_id=patient_id,
             idempotency_key=idempotency_key,
@@ -126,7 +126,8 @@ async def dispatch_bundle(
             fhir_token=fhir_token,
             chw_id=chw_id
         )
-        queue_status = "queued"
+        # inserted=False: same key already queued — idempotency working correctly
+        queue_status = "queued" if inserted else "already_queued"
     except QueueFull:
         queue_status = "queue_full"
 
@@ -136,6 +137,9 @@ async def dispatch_bundle(
         "reason":          reason,
         "patient_id":      patient_id,
         "chw_id":          chw_id,
-        "message":         "Bundle saved locally. Will sync when connection restores." if queue_status == "queued"
-                           else "Queue full. Manual review required."
+        "message": (
+            "Bundle saved locally. Will sync when connection restores." if queue_status == "queued"
+            else "Bundle already queued — no duplicate created." if queue_status == "already_queued"
+            else "Queue full. Manual review required."
+        )
     }
