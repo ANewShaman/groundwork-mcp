@@ -194,7 +194,8 @@ async def analyze_clinical_image(
     image_url: str = None,
     chw_id: str = None,
     context_hint: str = None,
-    manual_history: str = None          # FIX: was missing — needed for chained history demo
+    manual_history: str = None,
+    overrides: dict = None
 ) -> dict:
     """
     Vision triage: analyze a CHW photo and extract structured clinical data.
@@ -203,6 +204,9 @@ async def analyze_clinical_image(
     Pass image_base64 + image_mime for encoded images, or image_url for direct URLs.
     image_url is fetched server-side and converted to base64 before sending to the model.
     manual_history: free-text patient history string for severity cross-reference.
+    overrides: dict of fields to forcibly correct after AI extraction,
+               e.g. {"symptoms": ["malaria"], "severity_score": 0.85}.
+               Sets code_status="manual_review" automatically.
     For prescriptions and handwritten records, use triage_document_image instead.
     """
     return await _analyze_image(
@@ -212,7 +216,8 @@ async def analyze_clinical_image(
         image_base64=image_base64,
         image_mime=image_mime,
         image_url=image_url,
-        manual_history=manual_history   # FIX: now forwarded through
+        manual_history=manual_history,
+        overrides=overrides
     )
 
 # ---------------------------------------------------------------------------
