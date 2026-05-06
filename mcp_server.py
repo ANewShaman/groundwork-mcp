@@ -2,6 +2,7 @@ import os
 import threading
 from fastmcp import FastMCP
 from dotenv import load_dotenv
+from modules.fhir_context import resolve_patient_context
 
 load_dotenv()
 
@@ -74,7 +75,6 @@ async def get_patient_history(
     """
     return await get_patient_context(patient_id, fhir_server_url, fhir_token)
 
-
 @mcp.tool()
 async def extract_triage_with_history(
     raw_text: str,
@@ -85,19 +85,20 @@ async def extract_triage_with_history(
 ) -> dict:
     """
     PRIMARY TRIAGE TOOL. Full pipeline with FHIR history cross-reference.
-    Step 1 — Pull patient conditions from FHIR.
+    Step 1 — Pull patient conditions from FHIR (only if fhir_server_url present).
     Step 2 — Triage multilingual note with history injected.
     Step 3 — Deterministic severity upgrades fire for COPD, TB, hypertension, etc.
     SHARP: fhir_server_url = X-FHIR-Server-URL, fhir_token = X-FHIR-Access-Token.
     """
-    patient_history = await get_patient_context(
+    patient_history = await resolve_patient_context(
         patient_id, fhir_server_url, fhir_token
     )
     result = await triage_extractor(
         raw_text, patient_id, patient_history, chw_id=chw_id
     )
-    result["patient_history_used"] = patient_history.get("conditions", [])
+    result["fhir_context_used"] = patient_history.get("source") in ["fhir", "fhir_error"]
     result["fhir_source"] = patient_history.get("source", "none")
+    result["patient_history_used"] = patient_history.get("conditions", [])
     return result
 
 
@@ -193,7 +194,9 @@ async def analyze_clinical_image(
     chw_id: str = None,
     context_hint: str = None,
     manual_history: str = None,
-    overrides: dict = None
+    overrides: dict = None,
+    fhir_server_url: str = None,
+    fhir_token: str = None
 ) -> dict:
     """
     Vision triage: analyze a CHW photo for structured clinical data.
@@ -202,7 +205,11 @@ async def analyze_clinical_image(
     Output schema matches extract_triage — use build_fhir_bundle downstream.
     For prescriptions and handwritten records use triage_document_image.
     """
-    return await _analyze_image(
+    patient_history = await resolve_patient_context(
+        patient_id, fhir_server_url, fhir_token
+    )
+
+    result = await _analyze_image(
         patient_id=patient_id,
         chw_id=chw_id,
         context_hint=context_hint,
@@ -210,14 +217,17 @@ async def analyze_clinical_image(
         image_mime=image_mime,
         image_url=image_url,
         manual_history=manual_history,
-        overrides=overrides
+        overrides=overrides,
+        patient_history=patient_history if patient_history.get("source") != "none" else None
     )
-
+    result["fhir_context_used"] = patient_history.get("source") in ["fhir", "fhir_error"]
+    result["fhir_source"] = patient_history.get("source", "none")
+    result["patient_history_used"] = patient_history.get("conditions", [])
+    return result
 
 # ---------------------------------------------------------------------------
 # OCR bridge
 # ---------------------------------------------------------------------------
-
 @mcp.tool()
 async def triage_document_image(
     patient_id: str,
@@ -236,21 +246,22 @@ async def triage_document_image(
     Best for: prescriptions, lab reports, referral slips, health records.
     Pass result to build_medication_bundle or dispatch_medication_bundle.
     """
-    patient_history = None
-    if patient_id:
-        patient_history = await get_patient_context(
-            patient_id, fhir_server_url, fhir_token
-        )
+    patient_history = await resolve_patient_context(
+        patient_id, fhir_server_url, fhir_token
+    )
 
-    return await triage_from_document_image(
+    result = await triage_from_document_image(
         patient_id=patient_id,
         chw_id=chw_id,
         image_base64=image_base64,
         image_mime=image_mime,
         image_url=image_url,
-        patient_history=patient_history
+        patient_history=patient_history if patient_history.get("source") != "none" else None
     )
-
+    result["fhir_context_used"] = patient_history.get("source") in ["fhir", "fhir_error"]
+    result["fhir_source"] = patient_history.get("source", "none")
+    result["patient_history_used"] = patient_history.get("conditions", [])
+    return result
 
 # ---------------------------------------------------------------------------
 # Startup + run
@@ -272,11 +283,12 @@ if __name__ == "__main__":
         async def _patched_initialize(params):
             result = await orig_handle(params)
             try:
-                if result.capabilities.experimental is None:
-                    result.capabilities.experimental = {}
-                result.capabilities.experimental["ai.promptopinion/fhir-context"] = {
+                if not hasattr(result.capabilities, "extensions") or result.capabilities.extensions is None:
+                     result.capabilities.extensions = {}
+                result.capabilities.extensions["ai.promptopinion/fhir-context"] = {
                     "scopes": [{"name": "patient/Patient.rs", "required": True}]
                 }
+                
                 print("[GroundWork] FHIR context capability injected.")
             except Exception as inner:
                 print(f"[GroundWork] FHIR context inject failed (non-fatal): {inner}")
