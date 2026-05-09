@@ -39,7 +39,21 @@ def init_db():
                 last_attempted_at  TEXT
             )
         """)
+        # Migrate: safely add any columns absent from older schema versions.
+        # ALTER TABLE ADD COLUMN is idempotent-safe via the existence check.
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(sync_queue)")}
+        migrations = {
+            "chw_id":            "TEXT",
+            "fhir_server_url":   "TEXT",
+            "fhir_token":        "TEXT",
+            "attempts":          "INTEGER DEFAULT 0",
+            "last_attempted_at": "TEXT",
+        }
+        for col, typedef in migrations.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE sync_queue ADD COLUMN {col} {typedef}")
         conn.commit()
+
 
 # ---------------------------------------------------------------------------
 # Custom exceptions
@@ -121,19 +135,29 @@ def mark_synced(idempotency_key: str):
 
 def mark_failed(idempotency_key: str, attempts: int):
     """
-    Mark as failed ONLY after 5 attempts, else keep as pending for retry.
-    This ensures the record stays in the queue for the sync_worker.
+    Mark as failed ONLY when attempts >= MAX_ATTEMPTS.
+    Otherwise keep as pending.
+    Raises RuntimeError if no matching row is found.
     """
-    # Hardcoding '5' here for the test suite to ensure no constant-lookup fails
-    new_status = "failed" if attempts >= 5 else "pending"
-    
+    new_status = "failed" if attempts >= MAX_ATTEMPTS else "pending"
+
     with _get_conn() as conn:
-        conn.execute("""
+        cur = conn.execute("""
             UPDATE sync_queue
             SET status = ?, attempts = ?, last_attempted_at = ?
             WHERE idempotency_key = ?
-        """, (new_status, attempts, datetime.now(timezone.utc).isoformat(), idempotency_key))
+        """, (
+            new_status,
+            attempts,
+            datetime.now(timezone.utc).isoformat(),
+            idempotency_key
+        ))
         conn.commit()
+
+        if cur.rowcount == 0:
+            raise RuntimeError(
+                f"mark_failed: no row found for idempotency_key={idempotency_key!r}"
+            )
 
 
 def queue_status() -> dict:
