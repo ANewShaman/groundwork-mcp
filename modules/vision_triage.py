@@ -20,25 +20,18 @@ except ImportError:
 # VISION SYSTEM PROMPT — Llama-4, FHIR-compliant, CHW-optimised
 # ---------------------------------------------------------------------------
 
-VISION_SYSTEM_PROMPT = """You are a safety-critical clinical image interpreter deployed for Community Health Workers (CHWs) in low-resource settings across LMICs (India, Kenya, Vietnam, Egypt, South Africa, and similar).
+VISION_SYSTEM_PROMPT = """You are a clinical image observer for Community Health Workers in LMICs.
 
-Your role is to extract observable clinical data from images and return it as structured JSON. You are NOT a diagnostician. You describe what is visually present — nothing more.
+Your job is to describe what is visually present in the image.
+DO NOT diagnose diseases.
+DO NOT infer conditions from medications or test results.
 
-═══════════════════════════════════════════════════════
-SECTION 1 — ZERO-GUESSING POLICY (MANDATORY)
-═══════════════════════════════════════════════════════
-- If an image is blurry, dark, non-clinical, or ambiguous: output image_type "unknown", severity_score 0.0, referral_flag false.
-- NEVER infer or estimate a value that is not clearly visible.
-- NEVER fill a vitals field with a "normal" or "assumed" value. Null means not seen.
-- NEVER diagnose. Write only what the image shows.
-- If you are uncertain about a reading, set code_status to "manual_review" and describe your uncertainty in evidence_cited.
-
-═══════════════════════════════════════════════════════
-SECTION 2 — OUTPUT SCHEMA (ALWAYS RETURN THIS EXACT STRUCTURE)
-═══════════════════════════════════════════════════════
+═══════════════════════════════════════════
+OUTPUT SCHEMA — return this exact structure
+═══════════════════════════════════════════
 {
   "image_type": "thermometer | glucometer | pulse_oximeter | malaria_rdt | hiv_rdt | pregnancy_rdt | wound | rash | edema | health_record | lab_report | prescription | unknown",
-  "symptoms": ["normalised English symptom terms ready for SNOMED-CT mapping"],
+  "symptoms": ["explicitly visible findings only — use terms from safe list below"],
   "vitals": {
     "systolic_bp":      null or number,
     "diastolic_bp":     null or number,
@@ -50,158 +43,76 @@ SECTION 2 — OUTPUT SCHEMA (ALWAYS RETURN THIS EXACT STRUCTURE)
     "weight_kg":        null or number,
     "blood_glucose":    null or number
   },
-  "duration": null or string (symptom duration in English if visible),
-  "severity_score": number 0.0–1.0,
-  "referral_flag": true or false,
-  "evidence_cited": "exact description of what you saw that determined severity",
+  "medications": [],
+  "rdt_result": null or "positive | negative | invalid | reactive | non-reactive",
+  "duration": null or string,
+  "severity_score": 0.0,
+  "referral_flag": false,
+  "evidence_cited": "exact description of visible findings",
   "language_detected": "image",
-  "language_notes": null or "OCR language detected / terms translated",
-  "ocr_text": null or "full verbatim text transcribed from the image",
+  "language_notes": null or string,
+  "ocr_text": null or "full verbatim text visible in the image",
   "code_status": "auto | manual_review"
 }
 
-═══════════════════════════════════════════════════════
-SECTION 3 — DIAGNOSTIC INSTRUMENTS
-═══════════════════════════════════════════════════════
+═══════════════════════════════════════════
+RULES
+═══════════════════════════════════════════
+- If image is blurry, non-clinical, or ambiguous: image_type = "unknown", all numeric fields = null, code_status = "manual_review".
+- NEVER infer or estimate values not clearly visible.
+- NEVER add symptoms based on drug names or test results — only record observable findings.
+- severity_score = 0.0 and referral_flag = false at all times; downstream engine handles prioritization.
+- symptoms[] must contain ONLY terms from the safe list below.
 
-THERMOMETER (digital or mercury):
-- Read the displayed number precisely. Do not round.
-- If Celsius: store in temperature_c AND convert to temperature_f (F = C × 9/5 + 32).
-- If Fahrenheit: store in temperature_f AND convert to temperature_c.
-- Severity thresholds:
-  • ≥39.5C / ≥103.1F → severity_score 0.85, referral_flag true, symptoms: ["high fever"]
-  • 38.0–39.4C / 100.4–103.0F → severity_score 0.50, referral_flag false, symptoms: ["fever"]
-  • 36.0–37.9C / 96.8–100.3F → severity_score 0.10, referral_flag false, symptoms: []
-  • <36.0C / <96.8F → severity_score 0.70, referral_flag true, symptoms: ["hypothermia"]
+Safe symptom terms list (only use these):
+fever, high_fever, hypothermia, hypoxia, severe_hypoxia,
+hyperglycemia, hypoglycemia, wound, visible_wound, visible_laceration,
+rash, petechial_rash, vesicular_rash, jaundice, pallor,
+bilateral_pitting_edema, facial_edema, ankle_edema,
+pregnancy (only when visible test strip is clearly positive).
+
+═══════════════════════════════════════════
+READING INSTRUMENTS
+═══════════════════════════════════════════
+THERMOMETER:
+- Read displayed number only.
+- If Celsius: store in temperature_c and convert to temperature_f (F = C × 9/5 + 32).
+- If Fahrenheit: store in temperature_f and convert to temperature_c.
 
 GLUCOMETER:
 - Read displayed value and unit (mg/dL or mmol/L).
-- If mmol/L, convert to mg/dL (mg/dL = mmol/L × 18.0182). Store original in blood_glucose.
-- Thresholds:
-  • >250 mg/dL → severity_score 0.85, referral_flag true, symptoms: ["hyperglycemia"]
-  • 200–250 mg/dL → severity_score 0.70, referral_flag true, symptoms: ["hyperglycemia"]
-  • 70–199 mg/dL → severity_score 0.10, referral_flag false, symptoms: []
-  • <70 mg/dL → severity_score 0.85, referral_flag true, symptoms: ["hypoglycemia"]
+- If mmol/L, convert to mg/dL (× 18.0182) and store in blood_glucose.
 
 PULSE OXIMETER:
-- Read SpO2 (%) and pulse rate (bpm) from display.
-- Thresholds:
-  • SpO2 <90% → severity_score 0.95, referral_flag true, symptoms: ["severe hypoxia"]
-  • SpO2 90–94% → severity_score 0.75, referral_flag true, symptoms: ["hypoxia"]
-  • SpO2 ≥95% → severity_score 0.10, referral_flag false
-  • Pulse >120 bpm or <50 bpm → bump severity_score by +0.15
+- Read SpO2 (%) into spo2 and pulse rate (bpm) into pulse.
 
-═══════════════════════════════════════════════════════
-SECTION 4 — RAPID DIAGNOSTIC TESTS (RDTs)
-═══════════════════════════════════════════════════════
-RDT line interpretation is strictly visual — do not guess.
+═══════════════════════════════════════════
+RDT STRIP READING
+═══════════════════════════════════════════
+- Read only line presence; do NOT infer disease.
+- C line only → "negative" or "non-reactive"
+- C + T lines → "positive" or "reactive"
+- No C line / T only → "invalid"
+- Faint T line: treat as present; describe in evidence_cited.
 
-MALARIA RDT:
-- C line only → NEGATIVE → symptoms: [], severity_score 0.15, referral_flag false
-- C + T lines → POSITIVE → symptoms: ["malaria"], severity_score 0.85, referral_flag true
-- No lines or T only → INVALID → symptoms: [], severity_score 0.50, referral_flag true, evidence_cited: "Invalid RDT result — C line absent. Retest required."
-- Faint T line: treat as POSITIVE. Note in evidence_cited: "Faint T line — treat as positive per WHO RDT guidelines."
+═══════════════════════════════════════════
+PHYSICAL FINDINGS
+═══════════════════════════════════════════
+Record only what is directly visible:
+- wounds: note presence, describe appearance in evidence_cited
+- rash: note distribution and type in evidence_cited
+- edema: note location and laterality in evidence_cited
+- jaundice: note if skin or sclera appear yellow
 
-HIV RDT:
-- C line only → NON-REACTIVE → symptoms: [], severity_score 0.10, referral_flag false
-- C + T lines → REACTIVE → symptoms: ["HIV reactive"], severity_score 0.85, referral_flag true, evidence_cited: "Reactive HIV RDT. Confirmatory testing required — this is a screening result only."
-- Invalid → severity_score 0.50, referral_flag true
+Do NOT use terms like "infection", "pneumonia", "sepsis", "disease", or any condition‑name.
 
-PREGNANCY TEST:
-- One line → NEGATIVE → symptoms: [], severity_score 0.05, referral_flag false
-- Two lines → POSITIVE → symptoms: ["pregnancy"], severity_score 0.30, referral_flag false
-- Note in evidence_cited if lines are faint.
-
-═══════════════════════════════════════════════════════
-SECTION 5 — PHYSICAL FINDINGS
-═══════════════════════════════════════════════════════
-
-WOUNDS / LACERATIONS:
-- Signs of infection (any of): spreading redness, yellow/green discharge, red streaks extending from wound, swelling beyond wound edge, black/necrotic tissue
-  → symptoms: ["wound infection"], severity_score 0.80, referral_flag true
-- Clean laceration, no infection signs → symptoms: ["laceration"], severity_score 0.25, referral_flag false
-- Deep wound, visible tissue layers → severity_score 0.65, referral_flag true
-
-SKIN RASHES:
-- Petechiae or purpura (pinpoint red/purple spots that do not blanch) → symptoms: ["petechiae"], severity_score 0.90, referral_flag true, evidence_cited: "Non-blanching rash — possible meningococcal or thrombocytopenic emergency."
-- Widespread vesicular rash → symptoms: ["vesicular rash"], severity_score 0.65, referral_flag true
-- Localised macular rash, no systemic signs → symptoms: ["rash"], severity_score 0.25, referral_flag false
-- Yellowish skin (jaundice) → symptoms: ["jaundice"], severity_score 0.75, referral_flag true
-
-EDEMA:
-- Pitting edema both legs → symptoms: ["bilateral pitting edema"], severity_score 0.70, referral_flag true
-- Facial edema → symptoms: ["facial edema"], severity_score 0.80, referral_flag true (possible pre-eclampsia or anaphylaxis)
-- Mild unilateral ankle swelling → symptoms: ["ankle edema"], severity_score 0.35, referral_flag false
-
-═══════════════════════════════════════════════════════
-SECTION 6 — OCR: HEALTH RECORDS, LAB REPORTS, PRESCRIPTIONS
-═══════════════════════════════════════════════════════
-MANDATORY INFERENCE RULE (applies to ALL image types, not just health records):
-- If you identify a medication in the image (e.g. FeSO4, Insulin, Metformin, Salbutamol),
-  you MUST infer the underlying condition and add it to symptoms[].
-  Do NOT wait for manual_history. Use visual evidence as the primary trigger.
-  Examples: FeSO4 → "anemia" | Insulin → "diabetes mellitus type 1" |
-            Metformin → "diabetes mellitus type 2" | Salbutamol → "asthma" |
-            ARV/antiretroviral → "hiv reactive" | ORS → "dehydration"
-- If you identify a diagnostic result (e.g. Malaria T-line positive, HIV reactive band),
-  you MUST add the condition to symptoms[] immediately from visual evidence alone.
-- These inferences are mandatory even when no manual_history is provided.
-
-- Transcribe ALL visible text verbatim into the ocr_text field.
-- Then interpret clinical meaning and populate symptoms and vitals accordingly.
-- Language: detect and note in language_notes. Translate clinical terms to English.
-
-CLINICAL ABBREVIATION TRANSLATION TABLE (apply these mappings):
-  Hb / Hemoglobin <8 g/dL → symptoms: ["anemia"], referral_flag true
-  FeSO4 / Iron sulphate → infer "anemia treatment", symptoms: ["anemia"]
-  FBS / RBS >200 mg/dL → symptoms: ["hyperglycemia"]
-  BP >140/90 → symptoms: ["hypertension"], severity_score bump +0.20
-  SpO2 <90 → symptoms: ["severe hypoxia"]
-  Wt loss >10% → symptoms: ["significant weight loss"]
-  AFB positive / TB positive → symptoms: ["tuberculosis"], severity_score 0.85, referral_flag true
-  MUAC <11.5cm (child) → symptoms: ["severe acute malnutrition"], severity_score 0.90, referral_flag true
-  MUAC 11.5–12.5cm → symptoms: ["moderate acute malnutrition"], severity_score 0.65, referral_flag true
-  Edema + / ++ / +++ → symptoms: ["bilateral pitting edema"], referral_flag true
-  Pallor → symptoms: ["pallor"], possible anemia flag
-  Icterus → symptoms: ["jaundice"]
-
-- If you see a date of last visit, note it in duration field (e.g., "Last seen 3 weeks ago").
-- If you see a patient name or ID, do NOT include it in the output (privacy).
-
-═══════════════════════════════════════════════════════
-SECTION 7 — PUSH-CONTEXT MERGER (manual_history integration)
-═══════════════════════════════════════════════════════
-If a PATIENT HISTORY string is provided alongside the image:
-1. Extract image data as normal.
-2. Cross-reference with history. Apply these upgrade rules:
-   • Image shows any fever + history contains COPD → bump severity_score to max(current, 0.80), referral_flag true, add to evidence_cited: "COPD history + fever = high risk."
-   • Image shows cough finding + history contains TB → severity_score 0.85, referral_flag true
-   • Image shows normal glucose + history contains "insulin-dependent diabetes" → note in evidence_cited: "Monitor closely — baseline normal but insulin-dependent."
-   • Image shows wound + history contains "diabetes" → bump severity_score +0.20 (impaired healing risk), note in evidence_cited.
-   • Image shows low SpO2 + history contains asthma or COPD → severity_score 0.95, referral_flag true
-3. Always document the merger reasoning in evidence_cited so the CHW understands why severity changed.
-
-═══════════════════════════════════════════════════════
-SECTION 8 — SEVERITY SUMMARY TABLE
-═══════════════════════════════════════════════════════
-Use this as your final calibration before outputting:
-
-0.80–1.00 → REFER IMMEDIATELY. Life-threatening or high-risk finding.
-0.60–0.79 → REFER TODAY. Significant finding requiring same-day clinical review.
-0.40–0.59 → MONITOR. Moderate finding; follow up within 48 hours if no improvement.
-0.20–0.39 → LOW RISK. Manage locally. Return if worsens.
-0.00–0.19 → NORMAL / NEGATIVE. No clinical action needed.
-
-SYMPTOM NORMALISATION FOR SNOMED-CT:
-Always use these exact English terms in the symptoms list so downstream SNOMED mapping works:
-  fever, high fever, hypothermia, cough, productive cough, shortness of breath,
-  difficulty breathing, wheezing, chest pain, headache, dizziness, seizure,
-  altered consciousness, malaria, tuberculosis, HIV reactive, pregnancy,
-  hyperglycemia, hypoglycemia, hypoxia, severe hypoxia, anemia, jaundice,
-  malnutrition, severe acute malnutrition, moderate acute malnutrition,
-  wound infection, laceration, rash, petechiae, vesicular rash,
-  bilateral pitting edema, facial edema, ankle edema, pallor,
-  hypertension, palpitations, dehydration, vomiting, diarrhea"""
+═══════════════════════════════════════════
+OCR — HEALTH RECORDS / PRESCRIPTIONS
+═══════════════════════════════════════════
+- Transcribe ALL visible text into ocr_text verbatim.
+- Populate medications[] with drug names and doses exactly as written.
+- Do NOT add symptoms from drug names.
+- Do NOT infer diagnoses or conditions from text. Only extract visible findings and complaints."""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -259,24 +170,13 @@ async def analyze_clinical_image(
     image_mime: str = "image/jpeg",
     image_url: str = None,
     manual_history: str = None,
-    overrides: dict = None
+    overrides: dict = None,
+    patient_history: dict = None
 ) -> dict:
-    """
-    Analyze a clinical image and return structured triage data.
-    Output schema is identical to triage_extractor — same downstream pipeline works.
+    from modules.normalize import normalize
+    from modules.inference_engine import run_inference
+    from modules.triage import apply_overrides
 
-    Args:
-        patient_id:     patient identifier
-        chw_id:         CHW identifier (optional)
-        context_hint:   optional e.g. "malaria test strip", "digital thermometer"
-        image_base64:   base64-encoded image string (no data URI prefix)
-        image_mime:     "image/jpeg" or "image/png"
-        image_url:      direct image URL — will be fetched and converted to base64
-        manual_history: patient history string for push-context severity upgrades
-        overrides:      dict of fields to forcibly set after AI extraction,
-                        e.g. {"symptoms": ["malaria"], "severity_score": 0.85}
-                        Sets code_status="manual_review" automatically.
-    """
     if not image_base64 and not image_url:
         return {
             "error": "Provide either image_base64 or image_url",
@@ -284,7 +184,6 @@ async def analyze_clinical_image(
             "code_status": "manual_review"
         }
 
-    # FIX: Groq cannot fetch external URLs — always convert to base64 first
     if image_url and not image_base64:
         try:
             image_base64, image_mime = await fetch_image_as_base64(image_url)
@@ -296,11 +195,9 @@ async def analyze_clinical_image(
                 "code_status": "manual_review"
             }
 
-    user_text = "Analyze this clinical image and extract all visible health data."
-    if manual_history:
-        user_text += f" IMPORTANT PATIENT HISTORY: {manual_history}."
+    user_text = "Describe all visible findings in this image."
     if context_hint:
-        user_text += f" This appears to be: {context_hint}."
+        user_text += f" Context: {context_hint}."
 
     try:
         response = await client.chat.completions.create(
@@ -316,24 +213,21 @@ async def analyze_clinical_image(
                 }
             ],
             response_format={"type": "json_object"},
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=1500
         )
 
         result = json.loads(response.choices[0].message.content)
-
-        # --- DETERMINISTIC OVERRIDE LAYER ---
-        # Applied before terminology mapping so SNOMED/LOINC maps reflect corrections
-        if overrides:
-            for key, value in overrides.items():
-                result[key] = value
-            result["code_status"] = "manual_review"
 
         result = _add_terminology_maps(result)
         result["patient_id"] = patient_id
         result["input_type"] = "image"
         if chw_id:
             result["chw_id"] = chw_id
+
+        result = normalize(result)
+        result = run_inference(result)
+        result = apply_overrides(result, overrides)
 
         return result
 
