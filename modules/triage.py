@@ -2,10 +2,22 @@ import os
 import json
 from groq import AsyncGroq
 from dotenv import load_dotenv
+from modules.normalize import normalize
+from modules.inference_engine import run_inference
 
 load_dotenv()
 
-client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+
+def apply_overrides(result: dict, overrides: dict) -> dict:
+    updated = result.copy()
+    if overrides:
+        for k, v in overrides.items():
+            updated[k] = v
+        updated["code_status"] = "manual_review"
+    return updated
+
+
+client  = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 MODEL_ID = "llama-3.3-70b-versatile"
 
 # ---------------------------------------------------------------------------
@@ -25,60 +37,60 @@ LOINC_VITALS = {
 }
 
 SNOMED_CONDITIONS = {
-    "cough":                     "49727002",
-    "productive cough":          "28743005",
-    "shortness of breath":       "267036007",
-    "difficulty breathing":      "267036007",
-    "wheezing":                  "56018004",
-    "copd":                      "13645005",
-    "copd exacerbation":         "195951007",
-    "pneumonia":                 "233604007",
-    "tuberculosis":              "56717001",
-    "tb":                        "56717001",
-    "fever":                     "386661006",
-    "high fever":                "386661006",
-    "malaria":                   "61462000",
-    "typhoid":                   "4834000",
-    "dengue":                    "38362002",
-    "cholera":                   "63650001",
-    "chest pain":                "29857009",
-    "hypertension":              "38341003",
-    "palpitations":              "80313002",
-    "headache":                  "25064002",
-    "altered consciousness":     "419284004",
-    "seizure":                   "91175000",
-    "dizziness":                 "404640003",
-    "diarrhea":                  "62315008",
-    "vomiting":                  "422400008",
-    "abdominal pain":            "21522001",
-    "dehydration":               "34095006",
-    "malnutrition":              "76113001",
-    "severe acute malnutrition": "76113001",
+    "cough":                      "49727002",
+    "productive cough":           "28743005",
+    "shortness of breath":        "267036007",
+    "difficulty breathing":       "267036007",
+    "wheezing":                   "56018004",
+    "copd":                       "13645005",
+    "copd exacerbation":          "195951007",
+    "pneumonia":                  "233604007",
+    "tuberculosis":               "56717001",
+    "tb":                         "56717001",
+    "fever":                      "386661006",
+    "high fever":                 "386661006",
+    "malaria":                    "61462000",
+    "typhoid":                    "4834000",
+    "dengue":                     "38362002",
+    "cholera":                    "63650001",
+    "chest pain":                 "29857009",
+    "hypertension":               "38341003",
+    "palpitations":               "80313002",
+    "headache":                   "25064002",
+    "altered consciousness":      "419284004",
+    "seizure":                    "91175000",
+    "dizziness":                  "404640003",
+    "diarrhea":                   "62315008",
+    "vomiting":                   "422400008",
+    "abdominal pain":             "21522001",
+    "dehydration":                "34095006",
+    "malnutrition":               "76113001",
+    "severe acute malnutrition":  "76113001",
     "moderate acute malnutrition":"76113001",
-    "anemia":                    "271737000",
-    "pregnancy complication":    "609496007",
-    "wound infection":           "76844004",
-    "laceration":                "262531003",
-    "rash":                      "271807003",
-    "petechiae":                 "423902002",
-    "jaundice":                  "18165001",
-    "pallor":                    "267093001",
-    "hyperglycemia":             "80394007",
-    "hypoglycemia":              "302866003",
-    "hypoxia":                   "389086002",
-    "severe hypoxia":            "389086002",
-    "joint pain":                "57676002",
-    "back pain":                 "161891005",
-    "bacterial infection":       "87628006",
-    "hiv reactive":              "86406008",
-    "diabetes mellitus type 2":  "44054006",
-    "diabetes mellitus type 1":  "46635009",
-    "asthma":                    "195967001",
-    "heart failure":             "84114007",
-    "bilateral pitting edema":   "60046008",
-    "facial edema":              "217372002",
-    "ankle edema":               "248491001",
-    "intestinal parasites":      "47826004",
+    "anemia":                     "271737000",
+    "pregnancy complication":     "609496007",
+    "wound infection":            "76844004",
+    "laceration":                 "262531003",
+    "rash":                       "271807003",
+    "petechiae":                  "423902002",
+    "jaundice":                   "18165001",
+    "pallor":                     "267093001",
+    "hyperglycemia":              "80394007",
+    "hypoglycemia":               "302866003",
+    "hypoxia":                    "389086002",
+    "severe hypoxia":             "389086002",
+    "joint pain":                 "57676002",
+    "back pain":                  "161891005",
+    "bacterial infection":        "87628006",
+    "hiv reactive":               "86406008",
+    "diabetes mellitus type 2":   "44054006",
+    "diabetes mellitus type 1":   "46635009",
+    "asthma":                     "195967001",
+    "heart failure":              "84114007",
+    "bilateral pitting edema":    "60046008",
+    "facial edema":               "217372002",
+    "ankle edema":                "248491001",
+    "intestinal parasites":       "47826004",
 }
 
 # ---------------------------------------------------------------------------
@@ -92,7 +104,7 @@ Medical terms often appear in English even inside non-English sentences.
 Output MUST be a valid JSON object with EXACTLY these fields:
 
 {
-  "symptoms": ["list of symptoms in English"],
+  "symptoms": ["list of symptoms explicitly stated or clearly described — in English"],
   "vitals": {
     "systolic_bp": null or number,
     "diastolic_bp": null or number,
@@ -107,7 +119,7 @@ Output MUST be a valid JSON object with EXACTLY these fields:
   "duration": null or string describing symptom duration in English,
   "severity_score": number between 0.0 and 1.0,
   "referral_flag": true or false,
-  "evidence_cited": "the exact phrase or value that determined severity",
+  "evidence_cited": "the exact phrase or value from the input that determined severity",
   "language_detected": "primary language detected",
   "language_notes": null or "non-English terms translated",
   "code_status": "auto"
@@ -147,7 +159,7 @@ Input: "فاطمة، 30 سنة. حمى شديدة 40 درجة، سعال مست�
 Output: {"symptoms": ["fever", "cough"], "vitals": {"systolic_bp": null, "diastolic_bp": null, "temperature_f": 104.0, "temperature_c": 40.0, "pulse": null, "spo2": null, "respiratory_rate": null, "weight_kg": null, "blood_glucose": null}, "duration": "2 weeks", "severity_score": 0.88, "referral_flag": true, "evidence_cited": "Fever 40C / 104F exceeds red flag threshold", "language_detected": "arabic", "language_notes": "حمى شديدة = high fever, سعال = cough, أسبوعين = two weeks", "code_status": "auto"}"""
 
 # ---------------------------------------------------------------------------
-# History upgrade — proportional bumps, fully auditable, no hardcoded scores
+# History upgrade — deterministic, auditable
 # ---------------------------------------------------------------------------
 
 UPGRADE_CONDITIONS = [
@@ -172,10 +184,11 @@ UPGRADE_BUMPS = {
     "asthma":       0.25,
 }
 
+
 def _apply_history_upgrades(result: dict, conditions_lower: list) -> dict:
-    symptoms_lower = [s.lower() for s in result.get("symptoms", [])]
+    symptoms_lower   = [s.lower() for s in result.get("symptoms", [])]
     upgrades_applied = []
-    total_bump = 0.0
+    total_bump       = 0.0
 
     for condition_key, trigger_symptoms in UPGRADE_CONDITIONS:
         if any(condition_key in c for c in conditions_lower):
@@ -186,17 +199,18 @@ def _apply_history_upgrades(result: dict, conditions_lower: list) -> dict:
     if upgrades_applied:
         old_score = result.get("severity_score", 0.0)
         new_score = min(round(old_score + total_bump, 2), 1.0)
-        result["severity_score"] = new_score
-        result["referral_flag"] = True
-        result["evidence_cited"] = (
+        result["severity_score"]          = new_score
+        result["referral_flag"]           = True
+        result["evidence_cited"]          = (
             f"History upgrade: {', '.join(u.upper() for u in upgrades_applied)} "
             f"matched current symptoms. Score {old_score} → {new_score} "
             f"(+{round(total_bump, 2)})."
         )
         result["history_upgrades_applied"] = upgrades_applied
-        result["severity_bump_applied"] = round(total_bump, 2)
+        result["severity_bump_applied"]    = round(total_bump, 2)
 
     return result
+
 
 # ---------------------------------------------------------------------------
 # Main extractor
@@ -219,7 +233,7 @@ async def triage_extractor(
             model=MODEL_ID,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Extract from: \"{raw_text}\"{history_context}"}
+                {"role": "user",   "content": f"Extract from: \"{raw_text}\"{history_context}"}
             ],
             response_format={"type": "json_object"},
             temperature=0.1
@@ -238,7 +252,6 @@ async def triage_extractor(
             for k, v in vitals.items()
             if v is not None and k in LOINC_VITALS
         }
-
         result["snomed_map"] = {
             s.lower(): SNOMED_CONDITIONS[s.lower()]
             for s in result.get("symptoms", [])
@@ -249,21 +262,25 @@ async def triage_extractor(
         if chw_id:
             result["chw_id"] = chw_id
 
+        result = normalize(result)
+        result = run_inference(result)
+        result = apply_overrides(result, None)
+
         return result
 
     except json.JSONDecodeError as e:
         return {
-            "error": "JSON parse failed — LLM returned malformed output",
-            "details": str(e),
+            "error":      "JSON parse failed — LLM returned malformed output",
+            "details":    str(e),
             "patient_id": patient_id,
-            "chw_id": chw_id,
-            "code_status": "manual_review"
+            "chw_id":     chw_id,
+            "code_status":"manual_review"
         }
     except Exception as e:
         return {
-            "error": "Triage extraction failed",
-            "details": str(e),
+            "error":      "Triage extraction failed",
+            "details":    str(e),
             "patient_id": patient_id,
-            "chw_id": chw_id,
-            "code_status": "manual_review"
+            "chw_id":     chw_id,
+            "code_status":"manual_review"
         }
