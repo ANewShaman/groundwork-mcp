@@ -1,57 +1,52 @@
 MEDICATION_MAP = {
     # antianemic
-    "ferrous sulfate":        "antianemic",
-    "feso4":                  "antianemic",
-    "iron tablet":            "antianemic",
-    "folic acid":             "antianemic",
+    "ferrous sulfate": "antianemic",
+    "iron tablet":     "antianemic",
+    "folic acid":      "antianemic",
     # antidiabetic
-    "metformin":              "antidiabetic_oral",
-    "glucophage":             "antidiabetic_oral",
-    "insulin":                "antidiabetic_injectable",
+    "metformin":       "antidiabetic_oral",
+    "insulin":         "antidiabetic_injectable",
     # antihypertensive
-    "nifedipine":             "antihypertensive",
-    "amlodipine":             "antihypertensive",
-    "atenolol":               "antihypertensive",
+    "nifedipine":      "antihypertensive",
+    "amlodipine":      "antihypertensive",
+    "atenolol":        "antihypertensive",
     # cardiac
-    "digoxin":                "cardiac_glycoside",
+    "digoxin":         "cardiac_glycoside",
     # antibiotic
-    "amoxicillin":            "antibiotic",
-    "augmentin":              "antibiotic",
-    "cotrimoxazole":          "antibiotic",
-    "septrin":                "antibiotic",
+    "amoxicillin":     "antibiotic",
+    "cotrimoxazole":   "antibiotic",
     # antiretroviral
-    "arv":                    "antiretroviral",
-    "antiretroviral":         "antiretroviral",
+    "arv":             "antiretroviral",
+    "antiretroviral":  "antiretroviral",
     # bronchodilator
-    "salbutamol":             "bronchodilator",
-    "albuterol":              "bronchodilator",
-    "ventolin":               "bronchodilator",
+    "salbutamol":      "bronchodilator",
     # analgesic/antipyretic
-    "paracetamol":            "analgesic_antipyretic",
-    "acetaminophen":          "analgesic_antipyretic",
+    "paracetamol":     "analgesic_antipyretic",
     # rehydration
-    "ors":                    "rehydration_therapy",
+    "ors":             "rehydration_therapy",
     "oral rehydration salts": "rehydration_therapy",
     # anthelmintic
-    "albendazole":            "anthelmintic",
-    "mebendazole":            "anthelmintic",
+    "albendazole":     "anthelmintic",
+    "mebendazole":     "anthelmintic",
     # vitamin/supplement
-    "ascorbic acid":          "vitamin_supplement",
-    "vitamin c":              "vitamin_supplement",
+    "ascorbic acid":   "vitamin_supplement",
 }
+# Aliases removed (feso4, glucophage, ventolin, albuterol, augmentin,
+# septrin, acetaminophen) — normalize.py canonicalizes these before
+# run_inference() is called, so they were unreachable dead code.
 
 TEST_MAP = {
-    "rdt":          "rapid_diagnostic_test",
-    "malaria rdt":  "rapid_diagnostic_test",
-    "hiv rdt":      "rapid_diagnostic_test",
-    "rbs":          "blood_glucose_test",
-    "fbs":          "fasting_blood_glucose_test",
-    "hb":           "hemoglobin_test",
-    "hemoglobin":   "hemoglobin_test",
-    "muac":         "mid_upper_arm_circumference",
-    "afb":          "acid_fast_bacilli_smear",
-    "spo2":         "pulse_oximetry",
-    "bp":           "blood_pressure_measurement",
+    "rdt":         "rapid_diagnostic_test",
+    "malaria rdt": "rapid_diagnostic_test",
+    "hiv rdt":     "rapid_diagnostic_test",
+    "rbs":         "blood_glucose_test",
+    "fbs":         "fasting_blood_glucose_test",
+    "hb":          "hemoglobin_test",
+    "hemoglobin":  "hemoglobin_test",
+    "muac":        "mid_upper_arm_circumference",
+    "afb":         "acid_fast_bacilli_smear",
+    "spo2":        "pulse_oximetry",
+    "bp":          "blood_pressure_measurement",
 }
 
 
