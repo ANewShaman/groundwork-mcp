@@ -7,37 +7,7 @@ load_dotenv()
 
 FALLBACK_FHIR_URL = "https://r4.smarthealthit.org"
 
-# ---------------------------------------------------------------------------
-# RxNorm codes for common LMIC medications — no database needed
-# ---------------------------------------------------------------------------
-
-RXNORM_MAP = {
-    "ferrous sulfate":       "4482",
-    "feso4":                 "4482",
-    "iron tablet":           "4482",
-    "ascorbic acid":         "1049502",
-    "vitamin c":             "1049502",
-    "paracetamol":           "161",
-    "acetaminophen":         "161",
-    "amoxicillin":           "723",
-    "metformin":             "6809",
-    "salbutamol":            "435",
-    "albuterol":             "435",
-    "cotrimoxazole":         "10829",
-    "ors":                   "9863",
-    "oral rehydration":      "9863",
-    "albendazole":           "16681",
-    "folic acid":            "4511",
-    "nifedipine":            "7417",
-    "amlodipine":            "17767",
-    "atenolol":              "1202",
-    "digoxin":               "3407",
-    "insulin":               "5856",
-}
-
-def _get_rxnorm_code(drug_name: str) -> str | None:
-    key = drug_name.lower().strip()
-    return RXNORM_MAP.get(key) or RXNORM_MAP.get(key.split()[0])
+# RXNORM_MAP and _get_rxnorm_code() removed — resolved dynamically via terminology.py
 
 # ---------------------------------------------------------------------------
 # Patient context
@@ -107,10 +77,14 @@ async def fhir_bundle_builder(triage_json: dict, patient_id: str) -> dict:
     """
     Build a FHIR R4 Transaction Bundle from triage output.
     Generates: Condition (SNOMED), Observation (LOINC), RiskAssessment.
+    snomed_map is produced upstream by build_snomed_map() in triage.py.
     For prescription documents, use medication_bundle_builder instead.
     """
     timestamp = datetime.now(timezone.utc).isoformat()
     bundle_entries = []
+    needs_review = triage_json.get("code_status") == "manual_review"
+    review_tag = {"system": "http://groundwork.health/tags", "code": "CHW_REVIEW_REQUIRED"}
+
 
     # 1. Conditions from SNOMED map
     for display, code in triage_json.get("snomed_map", {}).items():
@@ -126,21 +100,22 @@ async def fhir_bundle_builder(triage_json: dict, patient_id: str) -> dict:
                     "coding": [{"system": "http://snomed.info/sct", "code": code, "display": display}],
                     "text": display
                 },
-                "recordedDate": timestamp
+                "recordedDate": timestamp,
+                **({"meta": {"tag": [review_tag]}} if needs_review else {})
             },
             "request": {"method": "POST", "url": "Condition"}
         })
 
     # 2. Observations from LOINC map
     LOINC_UNITS = {
-        "8480-6": ("mm[Hg]", "mmHg"),
-        "8462-4": ("mm[Hg]", "mmHg"),
-        "8310-5": ("Cel",    "°C"),
-        "8867-4": ("/min",   "bpm"),
-        "59408-5":("%",      "%"),
-        "9279-1": ("/min",   "/min"),
-        "29463-7":("kg",     "kg"),
-        "2339-0": ("mg/dL",  "mg/dL"),
+        "8480-6":  ("mm[Hg]", "mmHg"),
+        "8462-4":  ("mm[Hg]", "mmHg"),
+        "8310-5":  ("Cel",    "°C"),
+        "8867-4":  ("/min",   "bpm"),
+        "59408-5": ("%",      "%"),
+        "9279-1":  ("/min",   "/min"),
+        "29463-7": ("kg",     "kg"),
+        "2339-0":  ("mg/dL",  "mg/dL"),
     }
     for loinc_code, value in triage_json.get("loinc_map", {}).items():
         ucum, display_unit = LOINC_UNITS.get(loinc_code, ("1", ""))
@@ -156,12 +131,12 @@ async def fhir_bundle_builder(triage_json: dict, patient_id: str) -> dict:
                     "value":  value,
                     "unit":   display_unit,
                     "system": "http://unitsofmeasure.org",
-                    "code":   ucum
-                }
+                    "code":   ucum,
+                },
+                **({"meta": {"tag": [review_tag]}} if needs_review else {})
             },
             "request": {"method": "POST", "url": "Observation"}
         })
-
     # 3. RiskAssessment
     bundle_entries.append({
         "fullUrl": f"urn:uuid:{uuid.uuid4()}",
@@ -188,24 +163,30 @@ async def fhir_bundle_builder(triage_json: dict, patient_id: str) -> dict:
 async def medication_bundle_builder(ocr_result: dict, patient_id: str) -> dict:
     """
     Build a FHIR R4 Transaction Bundle from OCR bridge output.
-    Generates: MedicationRequest per drug, Condition per inferred symptom,
-    and a RiskAssessment for triage severity.
-
+    Generates: MedicationRequest per drug (RxNorm via terminology.py),
+    Condition per inferred symptom, and a RiskAssessment for triage severity.
     Call this instead of fhir_bundle_builder when input_type == "document_image".
     """
+    from modules.terminology import resolve_rxnorm
+
     timestamp = datetime.now(timezone.utc).isoformat()
     bundle_entries = []
 
+    needs_review = ocr_result.get("code_status") == "manual_review"
+    review_tag = {"system": "http://groundwork.health/tags", "code": "CHW_REVIEW_REQUIRED"}
+    
     # 1. MedicationRequest per medication
     for med in ocr_result.get("medications", []):
         drug_name = med.get("name", "Unknown medication")
-        rxnorm_code = _get_rxnorm_code(med.get("abbreviation", "") or drug_name)
+        abbrev    = med.get("abbreviation") or ""
+
+        rxcui, _ = await resolve_rxnorm(abbrev or drug_name)
 
         medication_coding = [{
             "system":  "http://www.nlm.nih.gov/research/umls/rxnorm",
-            "code":    rxnorm_code,
+            "code":    rxcui,
             "display": drug_name
-        }] if rxnorm_code else [{"display": drug_name}]
+        }] if rxcui else [{"display": drug_name}]
 
         dosage = []
         if med.get("frequency") or med.get("dose"):
@@ -236,7 +217,9 @@ async def medication_bundle_builder(ocr_result: dict, patient_id: str) -> dict:
                     "text":   drug_name
                 },
                 "meta": {
-                    "tag": [{"system": "http://groundwork.health/tags", "code": "CHW_ORIGINATED"}]
+                    "tag": [{"system": "http://groundwork.health/tags", "code": "CHW_ORIGINATED"},
+                    *([ review_tag] if needs_review else [])
+                    ]
                 }
             },
             "request": {"method": "POST", "url": "MedicationRequest"}
@@ -251,9 +234,8 @@ async def medication_bundle_builder(ocr_result: dict, patient_id: str) -> dict:
 
         bundle_entries.append(entry)
 
-    # 2. Conditions from SNOMED map (inferred from drugs)
-    snomed_map = ocr_result.get("snomed_map", {})
-    for display, code in snomed_map.items():
+    # 2. Conditions from SNOMED map (produced upstream by build_snomed_map())
+    for display, code in ocr_result.get("snomed_map", {}).items():
         bundle_entries.append({
             "fullUrl": f"urn:uuid:{uuid.uuid4()}",
             "resource": {
@@ -276,9 +258,9 @@ async def medication_bundle_builder(ocr_result: dict, patient_id: str) -> dict:
     bundle_entries.append({
         "fullUrl": f"urn:uuid:{uuid.uuid4()}",
         "resource": {
-            "resourceType":      "RiskAssessment",
-            "status":            "final",
-            "subject":           {"reference": f"Patient/{patient_id}"},
+            "resourceType":       "RiskAssessment",
+            "status":             "final",
+            "subject":            {"reference": f"Patient/{patient_id}"},
             "occurrenceDateTime": timestamp,
             "prediction": [{
                 "probabilityDecimal": ocr_result.get("severity_score", 0),
