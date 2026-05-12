@@ -110,15 +110,21 @@ async def extract_ocr_text(image_base64: str, image_mime: str = "image/jpeg") ->
                 "role": "user",
                 "content": [
                     image_block,
-                    {"type": "text", "text": "Transcribe all text from this image exactly as written."}
+                    {"type": "text", "text": "Transcribe all text from this image exactly as written. Return only a JSON object: {\"ocr_text\": \"...\"}"}
                 ]
             }
         ],
-        response_format={"type": "json_object"},
+        # No response_format here — same Groq/Llama-4 constrained decoder issue.
         temperature=0.0,
-        max_tokens=1024
+        max_tokens=2048
     )
-    raw = json.loads(response.choices[0].message.content)
+    raw = response.choices[0].message.content.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```", 2)[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.rsplit("```", 1)[0].strip()
+    raw = json.loads(raw)
     return raw.get("ocr_text", "")
 
 # ---------------------------------------------------------------------------
@@ -152,7 +158,8 @@ async def triage_from_document_image(
 ) -> dict:
     from modules.normalize import normalize
     from modules.inference_engine import run_inference
-    from modules.triage import apply_overrides, LOINC_VITALS, SNOMED_CONDITIONS
+    from modules.triage import apply_overrides, LOINC_VITALS, _apply_history_upgrades
+    from modules.terminology import build_snomed_map
 
     if not image_base64 and not image_url:
         return {"error": "Provide either image_base64 or image_url", "patient_id": patient_id, "code_status": "manual_review"}
@@ -173,38 +180,21 @@ async def triage_from_document_image(
 
         if patient_history:
             conditions_lower = [c.lower() for c in patient_history.get("conditions", [])]
-            symptoms_lower   = [s.lower() for s in result.get("symptoms", [])]
-            upgrades = []
-            upgrade_rules = [
-                ("copd",         ["anemia", "fever", "bacterial infection"]),
-                ("tuberculosis", ["bacterial infection"]),
-                ("diabetes",     ["anemia", "bacterial infection"]),
-                ("hypertension", ["hypertension"]),
-            ]
-            for condition_key, triggers in upgrade_rules:
-                if any(condition_key in c for c in conditions_lower):
-                    if any(t in symptoms_lower for t in triggers):
-                        upgrades.append(condition_key)
-            if upgrades:
-                old_score = result.get("severity_score", 0)
-                result["severity_score"] = min(round(max(old_score + 0.25, 0.70), 2), 1.0)
-                result["referral_flag"]  = True
-                result["evidence_cited"] = (
-                    f"History upgrade: {', '.join(upgrades).upper()} + current symptoms. "
-                    + result.get("evidence_cited", "")
-                )
+            if conditions_lower:
+                result = _apply_history_upgrades(result, conditions_lower)
 
         vitals = result.get("vitals", {}) or {}
+        # Prefer temperature_c when both are present — same LOINC code (8310-5),
+        # and fhir_ops always writes Cel/°C units. Storing °F under that code
+        # would be a silent unit mismatch in the FHIR Observation.
+        if vitals.get("temperature_c") is not None:
+            vitals = {k: v for k, v in vitals.items() if k != "temperature_f"}
         result["loinc_map"] = {
             LOINC_VITALS[k]: v
             for k, v in vitals.items()
             if v is not None and k in LOINC_VITALS
         }
-        result["snomed_map"] = {
-            s.lower(): SNOMED_CONDITIONS[s.lower()]
-            for s in result.get("symptoms", [])
-            if s.lower() in SNOMED_CONDITIONS
-        }
+        result["snomed_map"] = await build_snomed_map(result.get("symptoms", []))
 
         result["ocr_text"]   = ocr_text
         result["patient_id"] = patient_id
