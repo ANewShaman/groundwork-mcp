@@ -4,7 +4,7 @@
 
 GroundWork is an interoperable healthcare workflow system designed for low-resource and low-connectivity environments.
 
-Instead of another healthcare chatbot, GroundWork provides:
+Instead of another healthcare chatbot, GroundWork focuses on real frontline healthcare workflows:
 
 - multilingual clinical triage
 - medical image analysis
@@ -15,55 +15,24 @@ Instead of another healthcare chatbot, GroundWork provides:
 
 ---
 
-# The Problem
+# Why GroundWork?
 
-Community Health Workers (CHWs) often operate with:
+Community Health Workers (CHWs) often work with:
 
-- poor internet connectivity
+- poor connectivity
 - handwritten prescriptions
-- multilingual symptom descriptions
+- multilingual patient communication
 - fragmented healthcare systems
-- limited infrastructure
 - delayed synchronization
+- limited infrastructure
 
 Most healthcare AI systems assume:
-
 - stable internet
 - centralized hospital infrastructure
-- English-only workflows
 - structured EHR environments
+- English-only workflows
 
-These assumptions fail in real frontline healthcare delivery.
-
----
-
-# Our Solution
-
-GroundWork acts as a lightweight healthcare orchestration layer for frontline healthcare delivery.
-
-A CHW can:
-
-- upload a prescription image
-- send symptoms in their local language
-- analyze medical device images
-- continue working offline
-- sync data later
-
-The frontend only exposes:
-
-- urgency
-- findings
-- next steps
-- sync status
-
-while the backend handles:
-
-- MCP workflows
-- OCR pipelines
-- terminology normalization
-- FHIR generation
-- offline queueing
-- synchronization retries
+GroundWork is designed for environments where those assumptions fail.
 
 ---
 
@@ -71,42 +40,17 @@ while the backend handles:
 
 ## Multilingual Clinical Triage
 
-GroundWork extracts structured clinical data from multilingual free-text input.
+GroundWork extracts structured clinical data from multilingual text and voice workflows.
 
-Supported languages include:
-
-- Hindi
-- Tamil
-- Telugu
-- Malayalam
-- Kannada
-- Bengali
-- Arabic
-- Swahili
-- Tagalog
-- English
-- mixed-language clinical text
-
-The triage pipeline extracts:
-
+Supported outputs include:
 - symptoms
 - vitals
-- duration
-- severity score
+- severity scoring
 - referral urgency
+- workflow flags
 - language metadata
 
-The system combines LLM extraction with deterministic severity rules for safer workflows.
-
-### Example
-
-Input:
-
-```text
-"Mera sir dukh raha hai aur BP 170/110 hai"
-```
-
-Extracted:
+Example:
 
 ```json
 {
@@ -120,117 +64,133 @@ Extracted:
 
 ## Medical Image Analysis
 
-GroundWork supports direct analysis of clinical images captured by CHWs.
+GroundWork supports direct analysis of frontline clinical images:
 
-Supported image workflows:
-
-- thermometer readings
 - pulse oximeters
 - glucometers
-- malaria RDT strips
+- thermometers
 - HIV RDT strips
-- wounds
-- edema
-- rashes
+- malaria RDT strips
+- wound images
+- edema/rashes
 - referral records
 
 The system extracts:
-
 - vitals
-- RDT results
-- visible findings
-- OCR text
 - device measurements
+- RDT results
+- OCR text
+- workflow observations
 
 without unsupported diagnostic inference.
-
-### Example
-
-Pulse oximeter image:
-
-```json
-{
-  "spo2": 88,
-  "pulse": 122,
-  "severity_score": 0.91,
-  "referral_flag": true
-}
-```
 
 ---
 
 ## Prescription OCR
 
-GroundWork implements a two-stage OCR pipeline:
+GroundWork implements a structured OCR pipeline for:
+
+- handwritten prescriptions
+- referral slips
+- multilingual medication records
+- clinical documents
+
+Pipeline:
 
 ```text
 Prescription Image
         ↓
-OCR Transcription
+OCR Extraction
         ↓
-Structured Clinical Extraction
+Structured Parsing
         ↓
 Normalization
         ↓
-FHIR Preparation
+FHIR Bundle Generation
 ```
 
-Supported documents:
-
-- handwritten prescriptions
-- referral slips
-- lab reports
-- health records
-
-The OCR pipeline separates:
-
-1. raw transcription
-2. structured extraction
-
-to reduce hallucinations and preserve auditability.
-
 ---
 
-## FHIR Interoperability
+## FHIR-Native Interoperability
 
-GroundWork generates FHIR R4 Transaction Bundles automatically.
+GroundWork automatically generates FHIR R4 transaction bundles.
 
-Generated resources include:
-
+Supported resources:
 - Observation
-- Condition
 - MedicationRequest
+- Condition
 - RiskAssessment
 
-LOINC codes are attached to vitals automatically.
-
-SNOMED CT concepts are generated for symptoms and findings.
-
-RxNorm resolution is used for medications.
+Terminology support includes:
+- LOINC
+- SNOMED CT
+- RxNorm
 
 ---
 
-## Offline-First Infrastructure
+## Offline-First Synchronization
 
 GroundWork is designed around unreliable connectivity.
 
 Features include:
-
 - SQLite queueing
 - deferred synchronization
 - retry logic
-- exponential backoff
+- idempotent dispatching
 - persistent offline storage
-- idempotent dispatch
 
-Possible sync states:
+If synchronization fails:
+1. bundles are stored locally
+2. retry workers attempt synchronization later
+3. duplicate bundles are prevented automatically
 
-- Saved offline
-- Sync pending
-- Synced
-- Failed
+---
 
-If synchronization fails, bundles are stored locally and retried automatically by a background worker.
+# Example Output
+
+Generated directly from pulse oximeter image extraction and FHIR conversion.
+
+```json
+{
+  "resourceType": "Observation",
+  "status": "final",
+  "subject": {
+    "reference": "Patient/pt-rx-001"
+  },
+  "code": {
+    "coding": [
+      {
+        "system": "http://loinc.org",
+        "code": "59408-5"
+      }
+    ]
+  },
+  "valueQuantity": {
+    "value": 99,
+    "unit": "%",
+    "system": "http://unitsofmeasure.org",
+    "code": "%"
+  }
+}
+```
+
+---
+
+# End-to-End Workflow
+
+```text
+CHW uploads pulse oximeter image
+            ↓
+GroundWork extracts:
+    SpO2 = 99%
+    Pulse = 68 bpm
+            ↓
+FHIR Observation generated
+            ↓
+Bundle queued locally if offline
+            ↓
+Automatic synchronization retry
+```
 
 ---
 
@@ -239,11 +199,6 @@ If synchronization fails, bundles are stored locally and retried automatically b
 ```text
                 ┌──────────────────────┐
                 │ CHW / Mobile Client  │
-                └──────────┬───────────┘
-                           │
-                           ▼
-                ┌──────────────────────┐
-                │ Prompt Opinion Agent │
                 └──────────┬───────────┘
                            │
                            ▼
@@ -281,150 +236,100 @@ If synchronization fails, bundles are stored locally and retried automatically b
 
 ---
 
-# MCP Tooling
+# MCP Integration (Prompt Opinion Platform)
 
-GroundWork exposes healthcare workflows through FastMCP tools.
+GroundWork exposes healthcare workflows through MCP tools using FastMCP.
 
-Core tools include:
+To connect GroundWork to the Prompt Opinion platform:
+
+## 1. Start the GroundWork MCP server
+
+```bash
+python main.py
+```
+
+Example local server:
+
+```text
+http://localhost:8000
+```
+
+---
+
+## 2. Expose the local server using ngrok
+
+```bash
+ngrok http 8000
+```
+
+Example output:
+
+```text
+Forwarding https://abc123.ngrok-free.app -> http://localhost:8000
+```
+
+---
+
+## 3. Add MCP Server in Prompt Opinion
+
+Inside the Prompt Opinion platform:
+
+- Open MCP Configuration
+- Add new MCP server
+- Paste the ngrok HTTPS endpoint
+
+Example:
+
+```text
+https://abc123.ngrok-free.app
+```
+
+GroundWork MCP tools will now become available inside Prompt Opinion workflows.
+
+---
+
+## Available MCP Tools
 
 | Tool | Purpose |
 |---|---|
 | `extract_triage` | multilingual text triage |
-| `extract_triage_with_history` | triage with FHIR history context |
 | `analyze_clinical_image` | clinical image analysis |
-| `triage_document_image` | OCR + document extraction |
-| `build_fhir_bundle` | generate FHIR bundles |
-| `dispatch_fhir_bundle` | dispatch bundles with retry logic |
-| `check_sync_queue` | queue monitoring |
+| `triage_document_image` | OCR + prescription extraction |
+| `build_fhir_bundle` | generate FHIR transaction bundles |
+| `dispatch_fhir_bundle` | queue-aware FHIR dispatch |
+| `check_sync_queue` | offline queue monitoring |
 
 ---
 
-# Workflow Pipelines
+# What GroundWork Demonstrates
 
-## Text Triage Pipeline
-
-```text
-Clinical Text
-      ↓
-LLM Extraction
-      ↓
-Normalization
-      ↓
-Deterministic Severity Rules
-      ↓
-FHIR Generation
-```
-
----
-
-## Vision Pipeline
-
-```text
-Clinical Image
-      ↓
-Vision Model Extraction
-      ↓
-Vital Parsing
-      ↓
-LOINC Mapping
-      ↓
-FHIR Preparation
-```
-
----
-
-## OCR Pipeline
-
-```text
-Prescription Image
-        ↓
-OCR Extraction
-        ↓
-Medication Parsing
-        ↓
-RxNorm Resolution
-        ↓
-MedicationRequest Bundle
-```
-
----
-
-# Offline Queueing + Synchronization
-
-GroundWork persists failed dispatches locally using SQLite.
-
-The queue stores:
-
-- FHIR bundles
-- retry attempts
-- timestamps
-- CHW IDs
-- synchronization state
-- idempotency keys
-
-Synchronization architecture:
-
-```text
-Dispatch Failure
-       ↓
-SQLite Queue
-       ↓
-Background Retry Worker
-       ↓
-FHIR Synchronization
-```
-
-The dispatcher includes:
-
-- exponential backoff
-- retry policies
-- duplicate prevention
-- deferred synchronization
-
----
-
-# Terminology Layer
-
-GroundWork dynamically resolves healthcare terminology using:
-
-- SNOMED CT
-- LOINC
-- RxNorm
-
-The terminology subsystem includes:
-
-- SQLite caching
-- offline seed vocabularies
-- API fallback resolution
-- in-memory hot cache
-
-This allows partial offline interoperability even in disconnected environments.
+- Multimodal clinical extraction
+- Multilingual prescription OCR
+- Medical device reading interpretation
+- Offline-first healthcare workflows
+- FHIR-native interoperability
+- LOINC / SNOMED / RxNorm normalization
+- SQLite-backed synchronization queues
+- Idempotent retry semantics
+- CHW-oriented workflow design
 
 ---
 
 # Tech Stack
 
-## Frontend
-
-- React
-
 ## Backend
-
 - FastAPI
 - FastMCP
 - SQLite
 
 ## AI Pipelines
-
 - Groq API
 - Llama 3.3 70B
 - Llama 4 Vision
 
-## Healthcare Standards
-
-- MCP
-- A2A
+## Standards
 - FHIR R4
+- MCP
 - SNOMED CT
 - LOINC
 - RxNorm
@@ -445,8 +350,7 @@ groundwork/
 │   ├── normalize.py
 │   ├── inference_engine.py
 │   ├── action_dispatcher.py
-│   ├── sync_queue.py
-│   └── fhir_context.py
+│   └── sync_queue.py
 │
 ├── groundwork_queue.db
 ├── terminology_cache.db
@@ -478,70 +382,40 @@ python main.py
 
 ---
 
-# Example Workflow
+# Recent End-to-End Demo Results
 
-```text
-CHW uploads pulse oximeter image
-            ↓
-GroundWork extracts:
-    SpO2 = 88%
-    Pulse = 122
-            ↓
-Severity rules trigger referral
-            ↓
-FHIR Bundle generated
-            ↓
-Stored offline if no connectivity
-            ↓
-Later synchronized automatically
-```
+GroundWork successfully demonstrated:
 
----
+- 4 generated FHIR Observation resources
+- 3 generated MedicationRequest resources
+- multilingual Kannada prescription OCR
+- pulse oximeter extraction
+- glucometer extraction
+- thermometer extraction
+- offline queue fallback
+- SQLite persistence
+- retry + idempotency validation
 
-# What Makes GroundWork Different
+Example merged bundle summary:
 
-GroundWork is not:
-
-- a generic chatbot
-- a hospital dashboard
-- an EHR clone
-
-GroundWork focuses on:
-
-- deployability
-- interoperability
-- offline resilience
-- operational simplicity
-- low cognitive overhead
-- frontline healthcare workflows
-
-The goal is to make complex healthcare infrastructure feel effortless for Community Health Workers.
+| Resource | Count |
+|---|---|
+| Observation | 4 |
+| MedicationRequest | 3 |
+| RiskAssessment | 1 |
 
 ---
 
-# Future Plans
+# Vision
 
-- expanded multilingual support
-- longitudinal patient history
-- WhatsApp integration for LMIC workflows
-- edge-device deployment
-- deeper FHIR integrations
-- public health deployment pilots
-- lightweight edge inference
+GroundWork aims to make interoperable healthcare infrastructure deployable in environments where traditional systems struggle:
 
----
+- rural healthcare
+- low-connectivity clinics
+- mobile CHW workflows
+- multilingual frontline care
+- LMIC healthcare systems
 
-# Closing Statement
+The goal is simple:
 
-GroundWork transforms fragmented frontline healthcare workflows into interoperable, offline-resilient clinical infrastructure.
-
-By combining:
-
-- multilingual AI extraction
-- clinical image understanding
-- prescription OCR
-- FHIR-native interoperability
-- offline synchronization
-- MCP orchestration
-
-GroundWork enables Community Health Workers to operate effectively in environments where traditional healthcare systems fail.
+Make complex healthcare infrastructure feel lightweight, resilient, and deployable anywhere.
