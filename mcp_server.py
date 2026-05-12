@@ -241,8 +241,9 @@ async def triage_document_image(
     """
     Two-stage OCR + clinical interpretation for health documents.
     Stage 1: Vision model transcribes all text from image (pure OCR).
-    Stage 2: Text model interprets clinical meaning — infers symptoms
-    from drug names: FeSO4 → anemia, Metformin → diabetes, ARVs → HIV.
+    Stage 2: Text model extracts structured fields from transcribed text —
+    medications, observations, vitals, and explicitly stated complaints.
+    No clinical inference is performed; only what is present in the document is extracted.
     Best for: prescriptions, lab reports, referral slips, health records.
     Pass result to build_medication_bundle or dispatch_medication_bundle.
     """
@@ -272,7 +273,12 @@ if __name__ == "__main__":
         raise RuntimeError("[GroundWork] GROQ_API_KEY not set — check your .env file.")
 
     init_db()
+
     print("[GroundWork] SQLite queue initialised.")
+    from modules.terminology import init_terminology_db
+    init_terminology_db()
+    print("[GroundWork] Terminology cache initialised.")
+    
 
     # Patch handle_initialize to inject FHIR context capability.
     # Must happen before mcp.run() — the handshake fires on first client connect.
